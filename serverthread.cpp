@@ -25,6 +25,11 @@ int clientid;
 
 int gsready(std::string &ip, int port,int* ipstatus);
 
+int file_exists(const std::string& filename);
+
+    struct sockaddr_in server_addr;
+    struct timeval timeout;
+
 void *callback(void* temp);
 
 std::vector<std::string> split(std::string sString, std::string delimiter);
@@ -56,21 +61,35 @@ else{
  int *ipstatus = new int;
 
  int mastersocketfd = gsready(ipString ,port, ipstatus);
+  
+  delete ipstatus;
 
 std::vector<char> recvbuffvec(1024);
 
-  
 while (1)
 {
-  std::cout << "New client is connected with client id " << clientid << std::endl;
   int *csocketfd = new int;
   *csocketfd = accept(mastersocketfd,(struct sockaddr*)&clientaddress, &addrlen);
   clientid++;
-  if(csocketfd < 0){perror("error with accept function"); exit(1);}
+  std::cout << "New client is connected with client id " << clientid << std::endl;
+  if(*csocketfd < 0){perror("error with accept function"); exit(1);}
+   timeout.tv_sec = 1;
+   timeout.tv_usec = 0;
+    if (setsockopt(*csocketfd, SOL_SOCKET, SO_RCVTIMEO, (char *)&timeout, sizeof(timeout)) < 0) {
+        perror("setsockopt");
+        exit(EXIT_FAILURE);
+    }
    pthread_t calhandel;
-   pthread_create(&calhandel,NULL,callback,(void*)csocketfd);
+   if(pthread_create(&calhandel,NULL,callback,(void*)csocketfd)!= 0) {
+            perror("pthread_create");
+            close(*csocketfd);
+            continue;
+        }
 
+ pthread_detach(calhandel);
 } //end master socker while loop
+
+
 
 printf("done.\n");
 return(0);
@@ -80,39 +99,41 @@ return(0);
 void *callback(void* temp){
       int *csocketfd = (int*)temp;
       std::vector<char> recvbuffvec(1024);
-      while(1){
+        std::cout << "BLOCKED AT RECV" << std::endl;
       int sentrecvbytes = recv(*csocketfd, &recvbuffvec[0], recvbuffvec.size(), 0);
+      if(sentrecvbytes == 0){close(*csocketfd);clientid--;}
+      else if(sentrecvbytes < 0){perror("error with recv");clientid--;}
       char* recvbuff = new char[recvbuffvec.size()];
       std::memcpy(recvbuff, recvbuffvec.data(), recvbuffvec.size());
-      if(sentrecvbytes < 0){perror("sentrecv");close(*csocketfd);exit(1);}
-      if(sentrecvbytes == 0){exit(0);}
       std::vector<std::string> sVectorString = split(std::string(recvbuff), "\n");
+      delete recvbuff;
       std::vector<std::string> sVectorStringfirstline = split(sVectorString[0], " ");
       if(sVectorStringfirstline[0] == "GET"){
 
       if(sVectorStringfirstline[1] == "/"){
-
       std::ifstream htmlFile("html/get_index.html");
      if (!htmlFile.is_open()) {std::cerr << "Failed to open index.html\n";exit(1);}
-    std::string htmlContent((std::istreambuf_iterator<char>(htmlFile)), std::istreambuf_iterator<char>());
-    std::string httpResponse = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: " + std::to_string(htmlContent.size()) + "\r\n\r\n" + htmlContent;
+     std::string htmlContent((std::istreambuf_iterator<char>(htmlFile)), std::istreambuf_iterator<char>());
+     std::string httpResponse = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: " + std::to_string(htmlContent.size()) + "\r\n\r\n" + htmlContent;
     // Send HTML content to the client
     int bytesSent = send(*csocketfd, httpResponse.c_str(), httpResponse.size(), 0);
-    if (bytesSent < 0) {std::cerr << "Error sending HTML content\n";clientid--;exit(1);} 
+    if (bytesSent < 0) {std::cerr << "Error sending HTML content\n";close(*csocketfd);clientid--;} 
+    else if (bytesSent == 0){close(*csocketfd);}
 
       }
-      else if (sVectorStringfirstline[1] == "/afile")
-      {
-    std::ifstream htmlFile("html/afile.html");
+      else if (file_exists(sVectorStringfirstline[1].substr(1))){
+    std::ifstream htmlFile(sVectorStringfirstline[1].substr(1));
     if (!htmlFile.is_open()) {std::cerr << "Failed to open afile.html\n";exit(1);}
     std::string htmlContent((std::istreambuf_iterator<char>(htmlFile)), std::istreambuf_iterator<char>());
     std::string httpResponse = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: " + std::to_string(htmlContent.size()) + "\r\n\r\n" + htmlContent;
     // Send HTML content to the client
     int bytesSent = send(*csocketfd, httpResponse.c_str(), httpResponse.size(), 0);
-    if (bytesSent < 0) {std::cerr << "Error sending HTML content\n";clientid--;exit(1);} 
-        
+    if (bytesSent < 0) {std::cerr << "Error sending HTML content\n";close(*csocketfd);clientid--;} 
+    else if (bytesSent == 0){close(*csocketfd);clientid--;}
+    
       }
       else{
+
 
     std::ifstream htmlFile("html/error.html");
     if (!htmlFile.is_open()) {std::cerr << "Failed to open error.html\n";exit(1);}
@@ -120,7 +141,8 @@ void *callback(void* temp){
     std::string httpResponse = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: " + std::to_string(htmlContent.size()) + "\r\n\r\n" + htmlContent;
     // Send HTML content to the client
     int bytesSent = send(*csocketfd, httpResponse.c_str(), httpResponse.size(), 0);
-    if (bytesSent < 0) {std::cerr << "Error sending HTML content\n";clientid--;exit(1);} 
+    if (bytesSent < 0) {std::cerr << "Error sending HTML content\n";close(*csocketfd);clientid--;}
+     else if (bytesSent == 0){close(*csocketfd);} 
 
 
 
@@ -129,29 +151,30 @@ void *callback(void* temp){
 
 
       }
-      else if (sVectorStringfirstline[0] == "HEAD")
+      else if(sVectorStringfirstline[0] == "HEAD")
       {
+    if(sVectorStringfirstline[1] == "/"){
+      std::ifstream htmlFile("html/get_index.html");
+     if (!htmlFile.is_open()) {std::cerr << "Failed to open index.html\n";exit(1);}
+     std::string htmlContent((std::istreambuf_iterator<char>(htmlFile)), std::istreambuf_iterator<char>());
+     std::string httpResponse = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: " + std::to_string(htmlContent.size());
+    // Send HTML content to the client
+    int bytesSent = send(*csocketfd, httpResponse.c_str(), httpResponse.size(), 0);
+    if (bytesSent < 0) {std::cerr << "Error sending HTML content\n";close(*csocketfd);clientid--;} 
+    else if (bytesSent == 0){close(*csocketfd);clientid--;}
 
-    std::ifstream htmlFile("html/get_index.html");
+      }
+
+  else if (file_exists(sVectorStringfirstline[1].substr(1))){
+    std::ifstream htmlFile(sVectorStringfirstline[1].substr(1));
      if (!htmlFile.is_open()) {std::cerr << "Failed to open index.html\n";exit(1);}
     std::string htmlContent((std::istreambuf_iterator<char>(htmlFile)), std::istreambuf_iterator<char>());
     std::string httpResponse = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: " + std::to_string(htmlContent.size());
     // Send HTML content to the client
     int bytesSent = send(*csocketfd, httpResponse.c_str(), httpResponse.size(), 0);
-    if (bytesSent < 0) {std::cerr << "Error sending HTML content\n";clientid--;exit(1);} 
+    if (bytesSent < 0) {std::cerr << "Error sending HTML content\n";close(*csocketfd);clientid--;exit(1);} 
+      else if (bytesSent == 0){close(*csocketfd);clientid--;} 
 
-      }
-      else if (sVectorStringfirstline[1] == "/afile")
-      {
-    std::ifstream htmlFile("html/afile.html");
-    if (!htmlFile.is_open()) {std::cerr << "Failed to open afile.html\n";exit(1);}
-    std::string htmlContent((std::istreambuf_iterator<char>(htmlFile)), std::istreambuf_iterator<char>());
-    std::string httpResponse = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: " + std::to_string(htmlContent.size());
-    // Send HTML content to the client
-    int bytesSent = send(*csocketfd, httpResponse.c_str(), httpResponse.size(), 0);
-    if (bytesSent < 0) {std::cerr << "Error sending HTML content\n";clientid--;exit(1);} 
-
-        
       }
       else{
 
@@ -161,7 +184,8 @@ void *callback(void* temp){
     std::string httpResponse = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: " + std::to_string(htmlContent.size());
     // Send HTML content to the client
     int bytesSent = send(*csocketfd, httpResponse.c_str(), httpResponse.size(), 0);
-    if (bytesSent < 0) {std::cerr << "Error sending HTML content\n";clientid--;exit(1);} 
+    if (bytesSent < 0) {std::cerr << "Error sending HTML content\n";close(*csocketfd);clientid--;exit(1);} 
+      else if (bytesSent == 0){close(*csocketfd);clientid--;} 
 
 
 
@@ -169,13 +193,10 @@ void *callback(void* temp){
       
       
       }
-      else{
 
-      }
-    
-
-      delete recvbuff;
-    } 
+close(*csocketfd);
+delete csocketfd;
+pthread_exit(0);
 }
 
 
@@ -239,4 +260,15 @@ std::vector<std::string> split(std::string sString, std::string delimiter) {
     }
 
     return nString;
+}
+
+int file_exists(const std::string& filename) {
+    // Check if file exists and we can access it
+    if (access(filename.c_str(), F_OK) != -1) {
+        // File exists
+        return 1;
+    } else {
+        // File doesn't exist or we don't have access
+        return 0;
+    }
 }
