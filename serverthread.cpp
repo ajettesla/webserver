@@ -17,20 +17,30 @@
 #include <pthread.h>
 #include <unistd.h>
 #include <algorithm>
-#include <queue>
-#include <regex>
+#include <filesystem>
 /* You will to add includes here */
 
 int clientid;
 
-int gsready(std::string &ip, int port,int* ipstatus);
+int gsready(std::string &ip, int port);
 
-int file_exists(const std::string& filename);
+bool file_exists(const std::string& filename);
+
+void send_file(int csocketfd, const std::string& filename);
+
+
+void send_response(int csocketfd, const std::string& status_code, const std::string& content_type, const std::string& content);
+
+bool file_exists(const std::string& filename);
+
+void handle_client_1(int csocketfd);
 
     struct sockaddr_in server_addr;
     struct timeval timeout;
 
 void *callback(void* temp);
+
+void *callback_1(void* temp);
 
 std::vector<std::string> split(std::string sString, std::string delimiter);
 
@@ -50,6 +60,7 @@ socklen_t addrlen = sizeof(clientaddress);
  int port;
 
 
+
  if(outputString.size() > 2){
   port = atoi(outputString[outputString.size()-1].c_str());
   for(int i=0; i < 8 ; i++){
@@ -58,20 +69,30 @@ else{
    port = atoi(outputString[1].c_str());
    ipString = outputString[0];}
 
- int *ipstatus = new int;
 
- int mastersocketfd = gsready(ipString ,port, ipstatus);
-  
-  delete ipstatus;
+
+
+
+ int mastersocketfd = gsready(ipString ,port);
+
+
+
+        int yes = 1;
+        if (setsockopt(mastersocketfd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(int)) == -1) {
+            perror("setsockopt error");
+            close(mastersocketfd);
+        }
+
+
 
 std::vector<char> recvbuffvec(1024);
 
 while (1)
 {
+     
   int *csocketfd = new int;
   *csocketfd = accept(mastersocketfd,(struct sockaddr*)&clientaddress, &addrlen);
   clientid++;
-  std::cout << "New client is connected with client id " << clientid << std::endl;
   if(*csocketfd < 0){perror("error with accept function"); exit(1);}
    timeout.tv_sec = 1;
    timeout.tv_usec = 0;
@@ -79,8 +100,17 @@ while (1)
         perror("setsockopt");
         exit(EXIT_FAILURE);
     }
+
+
+        int opt = 1;
+    if (setsockopt(*csocketfd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) == -1) {
+        std::cerr << "Error: Unable to set socket option\n";
+        close(*csocketfd);
+        exit(1);
+    }
+    
    pthread_t calhandel;
-   if(pthread_create(&calhandel,NULL,callback,(void*)csocketfd)!= 0) {
+   if(pthread_create(&calhandel,NULL,callback_1,(void*)csocketfd)!= 0) {
             perror("pthread_create");
             close(*csocketfd);
             continue;
@@ -95,11 +125,87 @@ printf("done.\n");
 return(0);
 }
 
+void handle_client_1(int csocketfd) {
+
+    const int BUFFER_SIZE = 2048;
+    char buffer[BUFFER_SIZE];
+    int bytes_received;
+    std::string http_response;
+
+      bytes_received = recv(csocketfd, buffer, BUFFER_SIZE, 0);
+      if (bytes_received <= 0) {
+
+       if (errno == EAGAIN || errno == EWOULDBLOCK) {
+         //no data to read
+        }
+        else if (bytes_received == 0) {
+          // client left
+        }
+        else{
+              perror("recv 1");
+        }
+        return;
+}
+    std::string received_data(buffer, bytes_received);
+    std::vector<std::string> lines = split(received_data, "\n");
+if (!lines.empty()) {
+        std::vector<std::string> first_line = split(lines[0], " ");
+        if (first_line.size() >= 2) {
+            const std::string& method = first_line[0];
+            const std::string& path = first_line[1];
+            if (method == "GET") {
+                if (path == "/") {
+                    send_file(csocketfd, "html/get_index.html");
+                } else if (file_exists(path.substr(1))) {
+                    send_file(csocketfd, path.substr(1));
+                } else {
+                    send_response(csocketfd, "404 Not Found", "text/html", "");
+                }
+            } else if (method == "HEAD") {
+                if (path == "/") {
+                    send_response(csocketfd, "200 OK", "text/html", "");
+                } else if (file_exists(path.substr(1))) {
+                    send_response(csocketfd, "200 OK", "text/html", "");
+                } else {
+                    send_response(csocketfd, "404 Not Found", "text/html", "");
+                }
+            }
+        }
+    }
+    
+}
+
+
+
+void send_file(int csocketfd, const std::string& filename) {
+    std::ifstream file(filename, std::ios::binary);
+    if (file.is_open()) {
+        std::string file_content((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+        std::string response_header = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: " + std::to_string(file_content.size()) + "\r\n\r\n";
+        send(csocketfd, response_header.c_str(), response_header.size(), 0);
+        send(csocketfd, file_content.c_str(), file_content.size(), 0);
+    } else {
+        std::cerr << "Error opening file: " << filename << std::endl;
+        send_response(csocketfd, "404 Not Found", "text/html", "");
+    }
+}
+
+void send_response(int csocketfd, const std::string& status_code, const std::string& content_type, const std::string& content) {
+    std::string response_header = "HTTP/1.1 " + status_code + "\r\nContent-Type: " + content_type + "\r\nContent-Length: " + std::to_string(content.size()) + "\r\n\r\n";
+    send(csocketfd, response_header.c_str(), response_header.size(), 0);
+    send(csocketfd, content.c_str(), content.size(), 0);
+}
+void *callback_1(void* temp){
+  int *csocketfd = (int*)temp;
+  handle_client_1(*csocketfd);
+  close(*csocketfd);
+  delete csocketfd;
+  pthread_exit(0);
+}
 
 void *callback(void* temp){
       int *csocketfd = (int*)temp;
-      std::vector<char> recvbuffvec(1024);
-        std::cout << "BLOCKED AT RECV" << std::endl;
+      std::vector<char> recvbuffvec(2048);
       int sentrecvbytes = recv(*csocketfd, &recvbuffvec[0], recvbuffvec.size(), 0);
       if(sentrecvbytes == 0){close(*csocketfd);clientid--;}
       else if(sentrecvbytes < 0){perror("error with recv");clientid--;}
@@ -199,76 +305,87 @@ delete csocketfd;
 pthread_exit(0);
 }
 
+int gsready(std::string &ip, int port) {
+    int socketfd; 
+    std::string portStr = std::to_string(port);
+    struct addrinfo hint, *output, *temp;
+    int check = 0;
+    
+    memset(&hint, 0, sizeof(hint));
+    hint.ai_family = AF_UNSPEC;
+    hint.ai_socktype = SOCK_STREAM;
+    
+    int status = getaddrinfo(ip.c_str(), portStr.c_str(), &hint, &output);
 
-int gsready(std::string &ip, int port,int* ipstatus){
-int socketfd; 
-std::string portStr = std::to_string(port);
-struct addrinfo hint, *output, *temp;
-int check = 0;
-memset(&hint, 0, sizeof(hint));
-hint.ai_family = AF_UNSPEC;
-hint.ai_socktype = SOCK_STREAM;
-int status = getaddrinfo(ip.c_str(),portStr.c_str(), &hint, &output);
+    if (status != 0) {
+        perror("getaddrinfo error");
+        std::cerr << "getaddrinfo error: " << gai_strerror(status) << std::endl;
+        exit(1);
+    }
 
-if(status != 0){
-perror("There is problem in getting getaddrinfo");
-exit(1);
-}
+    for (temp = output; temp != NULL; temp = temp->ai_next) {
+        socketfd = socket(temp->ai_family, temp->ai_socktype, temp->ai_protocol);
 
+        if (socketfd == -1) {
+            perror("socket error");
+            continue;
+        }
 
-for(temp=output; temp != NULL;temp->ai_addr){
-socketfd = socket(temp->ai_family, temp->ai_socktype, temp->ai_protocol);
+        if (bind(socketfd, temp->ai_addr, temp->ai_addrlen) == -1) {
+            perror("bind error");
+            close(socketfd); // Close the socket if bind fails
+            continue;
+        } else {
+            std::cout << "[x]Listening on " << ip << ":" << port << std::endl;
+            break;
+        }
+    }
 
-if(bind(socketfd,temp->ai_addr,temp->ai_addrlen) < 0){if(check == 2){perror("bind error");}else{continue;}}
-else{
-  if(socketfd > 0){
-  std::cout << "[x]Listening on " << ip << ":" << port << std::endl;
-  break;
-  }
-}
+    if (temp == NULL) {
+        std::cerr << "Failed to bind socket" << std::endl;
+        exit(1);
+    }
 
-check++;
-
- 
-  }
-   
-
-if(listen(socketfd, 5 < 0)){perror("error with listen function");exit(1);}
+    if (listen(socketfd, 5) == -1) {
+        perror("error with listen function");
+        exit(1);
+    }
   
-freeaddrinfo(output);
-return socketfd;
+    freeaddrinfo(output);
+    return socketfd;
 }
 
 std::vector<std::string> split(std::string sString, std::string delimiter) {
     std::vector<std::string> nString;
     std::string temp;
-    int count = 0; 
+    size_t pos = 0;
 
-    for (int i = 0; i < static_cast<int>(sString.length()); i++) {
-        if (sString[i] == delimiter[0]) {
-            count++;
-            nString.push_back(temp);
-            temp = "";
-        } else {
-            temp = temp + sString[i];
-        }
+    // Find the first occurrence of the delimiter
+    pos = sString.find(delimiter);
+
+    while (pos != std::string::npos) {
+        // Split the string at the delimiter
+        nString.push_back(sString.substr(0, pos));
+        
+        // Erase the split part from the original string
+        sString.erase(0, pos + delimiter.length());
+
+        // Find the next occurrence of the delimiter
+        pos = sString.find(delimiter);
     }
 
-   
-    if (count == 0 || (count > 0 && temp != "")) {
-        nString.push_back(temp);
-    }
+    // Push the remaining part of the string
+    nString.push_back(sString);
 
     return nString;
 }
 
-int file_exists(const std::string& filename) {
+
+
+
+bool file_exists(const std::string& filename) {
     // Check if file exists and we can access it
-    if (access(filename.c_str(), F_OK) != -1) {
-        // File exists
-        return 1;
-    } else {
-        // File doesn't exist or we don't have access
-        return 0;
-    }
+    std::filesystem::path filepath(filename);
+    return std::filesystem::exists(filepath) && std::filesystem::is_regular_file(filepath);
 }
+
